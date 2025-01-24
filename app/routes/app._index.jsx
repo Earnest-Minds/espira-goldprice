@@ -250,7 +250,7 @@ export default function Index() {
     setLoading(true);
     setError(null);
     try {
-      const apiKey = "goldapi-b96usm5mg976t-io";
+      const apiKey = "goldapi-3x7ks19m4wpyhjb-io";
       const response = await fetch("https://www.goldapi.io/api/XAU/INR", {
         headers: {
           "x-access-token": apiKey,
