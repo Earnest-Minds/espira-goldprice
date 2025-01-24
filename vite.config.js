@@ -17,7 +17,7 @@ if (
   delete process.env.HOST;
 }
 
-const host = new URL(process.env.SHOPIFY_APP_URL || "http://localhost")
+const host = new URL(process.env.SHOPIFY_APP_URL || "https://espira-goldprice.onrender.com")
   .hostname;
 let hmrConfig;
 
