@@ -32,7 +32,7 @@ export const loader = async ({ request }) => {
                 title
                 status
                 handle
-                metafields(first: 50) {
+                metafields(first: 10) {
                   edges {
                     node {
                       namespace
