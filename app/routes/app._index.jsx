@@ -41,7 +41,7 @@ export const loader = async ({ request }) => {
                     }
                   }
                 }
-                variants(first: 10) {
+                variants(first: 100) {
                   edges {
                     node {
                       id
