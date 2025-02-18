@@ -87,10 +87,11 @@ export const action = async ({ request }) => {
   };
 
   // If a variant title has "10%", "12%", or "15%", apply these discount factors
+  // BUT we'll only apply the discount to the diamond portion
   const discountMap = {
-    "10%": 0.9,  // 10% discount
-    "12%": 0.88, // 12% discount
-    "15%": 0.85, // 15% discount
+    "10%": 0.9,   // 10% discount
+    "12%": 0.88,  // 12% discount
+    "15%": 0.85,  // 15% discount
   };
 
   const parseMetafieldValue = (value) => {
@@ -116,6 +117,7 @@ export const action = async ({ request }) => {
     const updatePromises = productData.map(async (product) => {
       const metafields = product.metafields.edges;
 
+      // Gather diamond types and weights
       const diamondType_1 = getMetafieldValue(metafields, "diamond_1");
       const diamondType_2 = getMetafieldValue(metafields, "diamond_2");
       const diamondType_3 = getMetafieldValue(metafields, "diamond_3");
@@ -133,7 +135,7 @@ export const action = async ({ request }) => {
         { type: diamondType_3, weight: diamondWeight_3 },
       ].filter((item) => item.type);
 
-      // Sum the diamond prices (no extra discount subtracted)
+      // Compute total diamond price
       const diamondPricesCalculated = selectedDiamonds.map((diamond) => ({
         type: diamond.type,
         price: (diamondPrices[diamond.type] || 0) * diamond.weight,
@@ -143,6 +145,7 @@ export const action = async ({ request }) => {
         0
       );
 
+      // Process each variant that has a recognized karat
       const variants = product.variants.edges
         .filter((edge) =>
           Object.keys(priceMap).some((k) =>
@@ -168,20 +171,25 @@ export const action = async ({ request }) => {
               weightMetafield === "N/A" ? 0 : parseFloat(weightMetafield) || 0;
           }
 
-          // Only apply making charges if there's an actual weight
           const makingChargesForWeight =
             weight > 0 ? makingCharges * weight : 0;
 
-          // Base gold + diamond cost
-          let updatedPrice =
-            price * priceMap[karat] * weight + makingChargesForWeight + totalDiamondPrice;
+          // Gold + making portion
+          const goldAndMakingCost = price * priceMap[karat] * weight + makingChargesForWeight;
 
-          // Apply discount factor if variant title includes "10%", "12%", or "15%"
+          // Diamond portion starts out as totalDiamondPrice
+          let discountedDiamondCost = totalDiamondPrice;
+
+          // Check if variant title includes "10%", "12%", or "15%"
+          // If so, ONLY discount the diamond portion
           Object.entries(discountMap).forEach(([discountStr, discountFactor]) => {
             if (edge.node.title.toLowerCase().includes(discountStr.toLowerCase())) {
-              updatedPrice *= discountFactor;
+              discountedDiamondCost = totalDiamondPrice * discountFactor;
             }
           });
+
+          // Combine them for the final price
+          const updatedPrice = goldAndMakingCost + discountedDiamondCost;
 
           return {
             id: edge.node.id,
@@ -191,6 +199,7 @@ export const action = async ({ request }) => {
 
       if (variants.length === 0) return null;
 
+      // Update these variants in Shopify
       const response = await admin.graphql(
         `#graphql
         mutation productVariantsBulkUpdate($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
@@ -220,6 +229,7 @@ export const action = async ({ request }) => {
       return response.json();
     });
 
+    // Collect any errors
     const results = (await Promise.all(updatePromises)).filter(Boolean);
     const errors = results
       .flatMap((result) => result.data.productVariantsBulkUpdate.userErrors)
@@ -251,7 +261,7 @@ export default function Index() {
   const [priceInput, setPriceInput] = useState("8000");
   const [makingChargesInput, setMakingChargesInput] = useState("1200");
 
-  // Diamond prices remain
+  // Diamond price state
   const [diamondPrices, setDiamondPrices] = useState({
     "Round Solitaire 5ct+": 30000,
     "Round Solitaire 3ct+": 30000,
@@ -316,6 +326,7 @@ export default function Index() {
     } else if (fetcher.data?.message) {
       alert(fetcher.data.message);
       if (fetcher.data.success) {
+        // If price update successful, reset these fields
         fetchProducts();
         setPriceInput("");
         setMakingChargesInput("");
@@ -326,6 +337,7 @@ export default function Index() {
   const handlePriceChange = (value) => setPriceInput(value);
   const handleMakingChargesChange = (value) => setMakingChargesInput(value);
 
+  // Diamond price updates
   const handleDiamondPriceChange = (type, value) => {
     setDiamondPrices((prevPrices) => ({
       ...prevPrices,
@@ -370,7 +382,6 @@ export default function Index() {
               </Text>
 
               {loading && <Text alignment="center">Loading gold price...</Text>}
-
               {error && (
                 <Text alignment="center" color="critical">
                   Error: {error}
