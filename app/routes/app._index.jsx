@@ -32,7 +32,7 @@ export const loader = async ({ request }) => {
                 title
                 status
                 handle
-                metafields(first: 10) {
+                metafields(first: 20) {
                   edges {
                     node {
                       namespace
@@ -41,15 +41,22 @@ export const loader = async ({ request }) => {
                     }
                   }
                 }
-                variants(first: 100) {
+                variants(first: 90) {
                   edges {
                     node {
                       id
                       title
                       price
-                      metafield(namespace: "custom", key: "weight") {
-                        value
+                      compareAtPrice
+                      metafields(first: 5) {
+                      edges {
+                        node {
+                          namespace
+                          key
+                          value
+                        }
                       }
+                    }
                     }
                   }
                 }
@@ -77,6 +84,9 @@ export const action = async ({ request }) => {
   const productData = JSON.parse(formData.get("productData"));
   const diamondPrices = JSON.parse(formData.get("diamondPrices"));
 
+  // We'll collect debug logs and return them for display.
+  const debugLogs = [];
+
   // Multipliers for gold karat
   const priceMap = {
     "24k": 1,
@@ -86,14 +96,17 @@ export const action = async ({ request }) => {
     "9k": 0.385,
   };
 
-  // If a variant title has "10%", "12%", or "15%", apply these discount factors
-  // BUT we'll only apply the discount to the diamond portion
+  // Discount factors for diamond portion only
   const discountMap = {
-    "10%": 0.9,   // 10% discount
-    "12%": 0.88,  // 12% discount
-    "15%": 0.85,  // 15% discount
+    "10%": 0.9,
+    "12%": 0.88,
+    "15%": 0.85,
   };
 
+  // Only allow these three colors
+  const allowedColors = ["yellow gold", "rose gold", "white"];
+
+  // Helper to parse metafield values safely
   const parseMetafieldValue = (value) => {
     if (!value) return null;
     try {
@@ -101,33 +114,35 @@ export const action = async ({ request }) => {
         return JSON.parse(value);
       }
     } catch {
-      console.warn("Invalid JSON in metafield:", value);
+      debugLogs.push(`Invalid JSON in metafield: ${value}`);
     }
     return value;
   };
 
+  // Returns parsed value for a certain metafield (namespace "custom")
   const getMetafieldValue = (metafields, key) => {
     const metafield = metafields.find(
       (m) => m.node.key === key && m.node.namespace === "custom"
     );
-    return metafield ? parseMetafieldValue(metafield.node.value) : null;
+    return metafield ? metafield.node.value : null;
+
   };
 
   try {
     const updatePromises = productData.map(async (product) => {
       const metafields = product.metafields.edges;
 
-      // Gather diamond types and weights
-      const diamondType_1 = getMetafieldValue(metafields, "diamond_1");
-      const diamondType_2 = getMetafieldValue(metafields, "diamond_2");
-      const diamondType_3 = getMetafieldValue(metafields, "diamond_3");
+      // Retrieve diamond types and weights (trim strings for proper matching)
+      let diamondType_1 = getMetafieldValue(metafields, "diamond_1");
+      let diamondType_2 = getMetafieldValue(metafields, "diamond_2");
+      let diamondType_3 = getMetafieldValue(metafields, "diamond_3");
+      if (typeof diamondType_1 === "string") diamondType_1 = diamondType_1.trim();
+      if (typeof diamondType_2 === "string") diamondType_2 = diamondType_2.trim();
+      if (typeof diamondType_3 === "string") diamondType_3 = diamondType_3.trim();
 
-      const diamondWeight_1 =
-        getMetafieldValue(metafields, "diamond_weight_1")?.value || 0;
-      const diamondWeight_2 =
-        getMetafieldValue(metafields, "diamond_weight_2")?.value || 0;
-      const diamondWeight_3 =
-        getMetafieldValue(metafields, "diamond_weight_3")?.value || 0;
+      const diamondWeight_1 = getMetafieldValue(metafields, "diamond_weight_1")?.value || 0;
+      const diamondWeight_2 = getMetafieldValue(metafields, "diamond_weight_2")?.value || 0;
+      const diamondWeight_3 = getMetafieldValue(metafields, "diamond_weight_3")?.value || 0;
 
       const selectedDiamonds = [
         { type: diamondType_1, weight: diamondWeight_1 },
@@ -136,87 +151,102 @@ export const action = async ({ request }) => {
       ].filter((item) => item.type);
 
       // Compute total diamond price
-      const diamondPricesCalculated = selectedDiamonds.map((diamond) => ({
-        type: diamond.type,
-        price: (diamondPrices[diamond.type] || 0) * diamond.weight,
-      }));
-      const totalDiamondPrice = diamondPricesCalculated.reduce(
-        (sum, item) => sum + item.price,
-        0
-      );
+      let totalDiamondPrice = 0;
+      if (selectedDiamonds.length > 0) {
+        totalDiamondPrice = selectedDiamonds.reduce((sum, diamond) => {
+          const typeNormalized =
+            typeof diamond.type === "string" ? diamond.type.trim() : diamond.type;
+          const perUnit = diamondPrices[typeNormalized] || 0;
+          return sum + perUnit * diamond.weight;
+        }, 0);
+      }
 
-      // Process each variant that has a recognized karat
+      debugLogs.push(`Product: ${product.title} — totalDiamondPrice: ${totalDiamondPrice}`);
+
+      // Process variants: only allowed color variants and those with a recognized karat
       const variants = product.variants.edges
+        .filter((edge) => {
+          const titleLower = edge.node.title.toLowerCase();
+          return allowedColors.some((color) => titleLower.includes(color));
+        })
         .filter((edge) =>
-          Object.keys(priceMap).some((k) =>
-            edge.node.title.toLowerCase().includes(k)
-          )
+          Object.keys(priceMap).some((k) => edge.node.title.toLowerCase().includes(k))
         )
         .map((edge) => {
-          // Identify karat in the variant title
-          const karat = Object.keys(priceMap).find((k) =>
+          let variantLog = `Variant: "${edge.node.title}"`;
+
+          // Identify karat from the variant title
+          const karatKey = Object.keys(priceMap).find((k) =>
             edge.node.title.toLowerCase().includes(k)
           );
-          const weightMetafield = edge.node.metafield?.value;
 
+          // Parse weight from the variant's metafield for weight
+          const weightMetafield = edge.node.metafield?.value;
           let weight = 0;
           try {
             const parsedWeight = parseMetafieldValue(weightMetafield);
-            weight =
-              parsedWeight?.value && parsedWeight.unit === "GRAMS"
-                ? parseFloat(parsedWeight.value)
-                : 0;
+            if (parsedWeight?.value && parsedWeight.unit === "GRAMS") {
+              weight = parseFloat(parsedWeight.value);
+            } else {
+              weight = parseFloat(weightMetafield) || 0;
+            }
           } catch {
-            weight =
-              weightMetafield === "N/A" ? 0 : parseFloat(weightMetafield) || 0;
+            weight = weightMetafield === "N/A" ? 0 : parseFloat(weightMetafield) || 0;
           }
 
-          const makingChargesForWeight =
-            weight > 0 ? makingCharges * weight : 0;
+          const makingChargesForWeight = weight > 0 ? makingCharges * weight : 0;
+          const goldAndMakingCost = price * (priceMap[karatKey] || 0) * weight + makingChargesForWeight;
 
-          // Gold + making portion
-          const goldAndMakingCost = price * priceMap[karat] * weight + makingChargesForWeight;
-
-          // Diamond portion starts out as totalDiamondPrice
+          // Begin with the full diamond cost
           let discountedDiamondCost = totalDiamondPrice;
+          let compareAtPrice = goldAndMakingCost + totalDiamondPrice;
 
-          // Check if variant title includes "10%", "12%", or "15%"
-          // If so, ONLY discount the diamond portion
-          Object.entries(discountMap).forEach(([discountStr, discountFactor]) => {
-            if (edge.node.title.toLowerCase().includes(discountStr.toLowerCase())) {
+          // Use a regex to detect a discount in the variant title (handles optional spaces)
+          const discountRegex = /(\d+)\s*%/i;
+          const discountMatch = edge.node.title.match(discountRegex);
+          if (discountMatch) {
+            const discountFound = discountMatch[0].replace(/\s+/g, '');
+            const discountFactor = discountMap[discountFound];
+            if (discountFactor) {
+              variantLog += ` | Match discount: "${discountFound}" => factor ${discountFactor}`;
               discountedDiamondCost = totalDiamondPrice * discountFactor;
             }
-          });
+          }
 
-          // Combine them for the final price
           const updatedPrice = goldAndMakingCost + discountedDiamondCost;
+              variantLog += ` | Gold + Making: ${goldAndMakingCost.toFixed(2)} | Diamond: ${discountedDiamondCost.toFixed(2)} | Final Price: ${updatedPrice.toFixed(2)} | Compare At Price: ${compareAtPrice.toFixed(2)}`;
+          debugLogs.push(variantLog);
 
           return {
             id: edge.node.id,
             price: String(updatedPrice.toFixed(2)),
+            compareAtPrice: String(compareAtPrice.toFixed(2)),
           };
         });
 
-      if (variants.length === 0) return null;
+      if (variants.length === 0) {
+        debugLogs.push(`No recognized variants for product "${product.title}".`);
+        return null;
+      }
 
-      // Update these variants in Shopify
       const response = await admin.graphql(
         `#graphql
-        mutation productVariantsBulkUpdate($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
-          productVariantsBulkUpdate(productId: $productId, variants: $variants) {
-            product {
-              id
-            }
-            productVariants {
-              id
-              price
-            }
-            userErrors {
-              field
-              message
+          mutation productVariantsBulkUpdate($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
+            productVariantsBulkUpdate(productId: $productId, variants: $variants) {
+              product {
+                id
+              }
+              productVariants {
+                id
+                price
+                compareAtPrice
+              }
+              userErrors {
+                field
+                message
+              }
             }
           }
-        }
         `,
         {
           variables: {
@@ -229,7 +259,6 @@ export const action = async ({ request }) => {
       return response.json();
     });
 
-    // Collect any errors
     const results = (await Promise.all(updatePromises)).filter(Boolean);
     const errors = results
       .flatMap((result) => result.data.productVariantsBulkUpdate.userErrors)
@@ -238,16 +267,16 @@ export const action = async ({ request }) => {
     if (errors.length > 0) {
       return {
         success: false,
-        message: `Error updating prices: ${errors
-          .map((e) => e.message)
-          .join(", ")}`,
+        message: `Error updating prices: ${errors.map((e) => e.message).join(", ")}`,
+        debugLogs,
       };
     }
 
-    return { success: true, message: "Product prices updated successfully" };
+    return { success: true, message: "Product prices updated successfully", debugLogs };
   } catch (error) {
-    console.error("Update error:", error);
-    return { success: false, message: error.message };
+    const errorMsg = `Update error: ${error.message}`;
+    debugLogs.push(errorMsg);
+    return { success: false, message: error.message, debugLogs };
   }
 };
 
@@ -258,10 +287,8 @@ export default function Index() {
   const [error, setError] = useState(null);
   const [products, setProducts] = useState([]);
   const [productsLoading, setProductsLoading] = useState(false);
-  const [priceInput, setPriceInput] = useState("8000");
+  const [priceInput, setPriceInput] = useState("8830");
   const [makingChargesInput, setMakingChargesInput] = useState("1200");
-
-  // Diamond price state
   const [diamondPrices, setDiamondPrices] = useState({
     "Round Solitaire 5ct+": 30000,
     "Round Solitaire 3ct+": 30000,
@@ -272,8 +299,9 @@ export default function Index() {
     "Fancy Solitaire 2ct+": 30000,
     "Fancy Solitaire 0.5ct+": 30000,
     "Small Diamonds": 15000,
-    "Gemstones": 15000,
+    Gemstones: 15000,
   });
+  const [debugLogs, setDebugLogs] = useState([]);
 
   const fetchGoldPrice = async () => {
     setLoading(true);
@@ -286,14 +314,11 @@ export default function Index() {
           "Content-Type": "application/json",
         },
       });
-
       if (!response.ok) {
         throw new Error("Failed to fetch gold price");
       }
-
       const data = await response.json();
-      // The original code adds 5% to the gold rate
-      setGoldPrice(data.price_gram_24k + (5 / 100) * data.price_gram_24k);
+      setGoldPrice(data.price_gram_24k + 0.05 * data.price_gram_24k);
     } catch (error) {
       setError(error.message);
       console.error("Error fetching gold price:", error);
@@ -325,19 +350,17 @@ export default function Index() {
       setProducts(fetcher.data.products);
     } else if (fetcher.data?.message) {
       alert(fetcher.data.message);
+      if (fetcher.data.debugLogs) {
+        setDebugLogs(fetcher.data.debugLogs);
+      }
       if (fetcher.data.success) {
-        // If price update successful, reset these fields
         fetchProducts();
-        setPriceInput("");
-        setMakingChargesInput("");
       }
     }
   }, [fetcher.data]);
 
   const handlePriceChange = (value) => setPriceInput(value);
   const handleMakingChargesChange = (value) => setMakingChargesInput(value);
-
-  // Diamond price updates
   const handleDiamondPriceChange = (type, value) => {
     setDiamondPrices((prevPrices) => ({
       ...prevPrices,
@@ -350,7 +373,6 @@ export default function Index() {
       alert("Please enter a valid gold price");
       return;
     }
-
     setLoading(true);
     try {
       fetcher.submit(
@@ -380,14 +402,12 @@ export default function Index() {
               <Text variant="headingLg" alignment="center">
                 Current Gold Price (24K)
               </Text>
-
               {loading && <Text alignment="center">Loading gold price...</Text>}
               {error && (
                 <Text alignment="center" color="critical">
                   Error: {error}
                 </Text>
               )}
-
               {goldPrice && !loading && !error && (
                 <BlockStack gap="200">
                   <Text variant="heading2xl" alignment="center">
@@ -402,17 +422,11 @@ export default function Index() {
                   </Text>
                 </BlockStack>
               )}
-
               <InlineStack gap="300" align="center">
-                <Button
-                  onClick={fetchGoldPrice}
-                  loading={loading}
-                  disabled={loading}
-                >
+                <Button onClick={fetchGoldPrice} loading={loading} disabled={loading}>
                   Refresh Price
                 </Button>
               </InlineStack>
-
               <BlockStack gap="400" alignment="center">
                 <InlineStack gap="300" align="center">
                   <TextField
@@ -431,7 +445,6 @@ export default function Index() {
                   />
                 </InlineStack>
               </BlockStack>
-
               <BlockStack gap="400">
                 <Text variant="headingMd">Diamond Prices (₹)</Text>
                 {Object.entries(diamondPrices).map(([type, value]) => (
@@ -444,20 +457,14 @@ export default function Index() {
                   />
                 ))}
               </BlockStack>
-
               <InlineStack gap="300" align="center">
-                <Button
-                  onClick={handleButtonClick}
-                  loading={loading}
-                  variant="primary"
-                >
+                <Button onClick={handleButtonClick} loading={loading} variant="primary">
                   Update Prices
                 </Button>
               </InlineStack>
             </BlockStack>
           </Card>
         </Layout.Section>
-
         <Layout.Section>
           <Card>
             <BlockStack gap="4">
@@ -477,14 +484,10 @@ export default function Index() {
                           {product.title}
                         </Text>
                         {product.metafields.edges
-                          .filter(
-                            (metafieldEdge) =>
-                              metafieldEdge.node.namespace === "custom"
-                          )
+                          .filter((metafieldEdge) => metafieldEdge.node.namespace === "custom")
                           .map((metafieldEdge, index) => (
                             <Text key={index} variant="bodySm" color="subdued">
-                              {metafieldEdge.node.key}:{" "}
-                              {metafieldEdge.node.value}
+                              {metafieldEdge.node.key}: {metafieldEdge.node.value}
                             </Text>
                           ))}
                         {product.variants.edges.map((edge, index) => (
@@ -510,6 +513,16 @@ export default function Index() {
               )}
             </BlockStack>
           </Card>
+          {debugLogs.length > 0 && (
+            <Card sectioned>
+              <BlockStack gap="2">
+                <Text variant="headingMd">Debug Logs</Text>
+                {debugLogs.map((line, idx) => (
+                  <Text key={idx}>{line}</Text>
+                ))}
+              </BlockStack>
+            </Card>
+          )}
         </Layout.Section>
       </Layout>
     </Page>
