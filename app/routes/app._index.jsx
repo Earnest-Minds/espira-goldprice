@@ -1,3 +1,5 @@
+
+
 import { useEffect, useState } from "react";
 import { useFetcher } from "@remix-run/react";
 import {
@@ -49,14 +51,14 @@ export const loader = async ({ request }) => {
                       price
                       compareAtPrice
                       metafields(first: 5) {
-                      edges {
-                        node {
-                          namespace
-                          key
-                          value
+                        edges {
+                          node {
+                            namespace
+                            key
+                            value
+                          }
                         }
                       }
-                    }
                     }
                   }
                 }
@@ -66,21 +68,52 @@ export const loader = async ({ request }) => {
         }
       `
     );
-
     const responseJson = await response.json();
     return {
       products: responseJson.data.products.edges.map((edge) => edge.node),
     };
   }
-
   return null;
+};
+
+
+// Helper functions defined at the top so both the action and component can use them
+const getMetafieldValue = (metafields, key) => {
+  if (!metafields || !Array.isArray(metafields)) return null;
+  const metafield = metafields.find(
+    (m) => m.node.key === key && m.node.namespace === "custom"
+  );
+  return metafield ? metafield.node.value : null;
+};
+
+const getNumericMetafieldValue = (metafields, key) => {
+  const val = getMetafieldValue(metafields, key);
+  if (!val) return 0;
+  const trimmed = val.trim();
+  try {
+    if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+      const parsed = JSON.parse(trimmed);
+      if (parsed && typeof parsed === "object" && parsed.value !== undefined) {
+        return parseFloat(parsed.value) || 0;
+      }
+    }
+  } catch (e) {
+    // If parsing fails, fallback to parseFloat
+  }
+  return parseFloat(val) || 0;
 };
 
 export const action = async ({ request }) => {
   const { admin } = await authenticate.admin(request);
   const formData = await request.formData();
-  const price = parseFloat(formData.get("price"));
+
+  // Parse the gold price and making charges safely.
+  let price = parseFloat(formData.get("price"));
   const makingCharges = parseFloat(formData.get("makingCharges")) || 0;
+  if (isNaN(price) || price <= 0) {
+    return { success: false, message: "Invalid gold price provided.", debugLogs: ["Invalid gold price."] };
+  }
+
   const productData = JSON.parse(formData.get("productData"));
   const diamondPrices = JSON.parse(formData.get("diamondPrices"));
 
@@ -106,33 +139,11 @@ export const action = async ({ request }) => {
   // Only allow these three colors
   const allowedColors = ["yellow gold", "rose gold", "white"];
 
-  // Helper to parse metafield values safely
-  const parseMetafieldValue = (value) => {
-    if (!value) return null;
-    try {
-      if (value.startsWith("{") || value.startsWith("[")) {
-        return JSON.parse(value);
-      }
-    } catch {
-      debugLogs.push(`Invalid JSON in metafield: ${value}`);
-    }
-    return value;
-  };
-
-  // Returns parsed value for a certain metafield (namespace "custom")
-  const getMetafieldValue = (metafields, key) => {
-    const metafield = metafields.find(
-      (m) => m.node.key === key && m.node.namespace === "custom"
-    );
-    return metafield ? metafield.node.value : null;
-
-  };
-
   try {
     const updatePromises = productData.map(async (product) => {
       const metafields = product.metafields.edges;
 
-      // Retrieve diamond types and weights (trim strings for proper matching)
+      // Retrieve diamond types and weights from product metafields.
       let diamondType_1 = getMetafieldValue(metafields, "diamond_1");
       let diamondType_2 = getMetafieldValue(metafields, "diamond_2");
       let diamondType_3 = getMetafieldValue(metafields, "diamond_3");
@@ -140,9 +151,10 @@ export const action = async ({ request }) => {
       if (typeof diamondType_2 === "string") diamondType_2 = diamondType_2.trim();
       if (typeof diamondType_3 === "string") diamondType_3 = diamondType_3.trim();
 
-      const diamondWeight_1 = getMetafieldValue(metafields, "diamond_weight_1")?.value || 0;
-      const diamondWeight_2 = getMetafieldValue(metafields, "diamond_weight_2")?.value || 0;
-      const diamondWeight_3 = getMetafieldValue(metafields, "diamond_weight_3")?.value || 0;
+      // Use getNumericMetafieldValue to parse diamond weights.
+      const diamondWeight_1 = getNumericMetafieldValue(metafields, "diamond_weight_1");
+      const diamondWeight_2 = getNumericMetafieldValue(metafields, "diamond_weight_2");
+      const diamondWeight_3 = getNumericMetafieldValue(metafields, "diamond_weight_3");
 
       const selectedDiamonds = [
         { type: diamondType_1, weight: diamondWeight_1 },
@@ -150,20 +162,18 @@ export const action = async ({ request }) => {
         { type: diamondType_3, weight: diamondWeight_3 },
       ].filter((item) => item.type);
 
-      // Compute total diamond price
+      // Compute total diamond price.
       let totalDiamondPrice = 0;
       if (selectedDiamonds.length > 0) {
         totalDiamondPrice = selectedDiamonds.reduce((sum, diamond) => {
-          const typeNormalized =
-            typeof diamond.type === "string" ? diamond.type.trim() : diamond.type;
+          const typeNormalized = (diamond.type || "").trim();
           const perUnit = diamondPrices[typeNormalized] || 0;
           return sum + perUnit * diamond.weight;
         }, 0);
       }
-
       debugLogs.push(`Product: ${product.title} — totalDiamondPrice: ${totalDiamondPrice}`);
 
-      // Process variants: only allowed color variants and those with a recognized karat
+      // Process variants.
       const variants = product.variants.edges
         .filter((edge) => {
           const titleLower = edge.node.title.toLowerCase();
@@ -175,33 +185,31 @@ export const action = async ({ request }) => {
         .map((edge) => {
           let variantLog = `Variant: "${edge.node.title}"`;
 
-          // Identify karat from the variant title
+          // Identify the karat from the variant title.
           const karatKey = Object.keys(priceMap).find((k) =>
             edge.node.title.toLowerCase().includes(k)
           );
 
-          // Parse weight from the variant's metafield for weight
-          const weightMetafield = edge.node.metafield?.value;
-          let weight = 0;
-          try {
-            const parsedWeight = parseMetafieldValue(weightMetafield);
-            if (parsedWeight?.value && parsedWeight.unit === "GRAMS") {
-              weight = parseFloat(parsedWeight.value);
-            } else {
-              weight = parseFloat(weightMetafield) || 0;
-            }
-          } catch {
-            weight = weightMetafield === "N/A" ? 0 : parseFloat(weightMetafield) || 0;
+          // Retrieve the variant's "gold weight" from its metafields.
+          // Your gold weight metafield is defined as custom.weight.
+          const variantMetafields = edge.node.metafields.edges;
+          const weight = getNumericMetafieldValue(variantMetafields, "weight");
+          if (!weight) {
+            variantLog += " | Warning: weight is missing or zero";
+          } else {
+            variantLog += ` | Weight: ${weight}`;
           }
 
           const makingChargesForWeight = weight > 0 ? makingCharges * weight : 0;
-          const goldAndMakingCost = price * (priceMap[karatKey] || 0) * weight + makingChargesForWeight;
+          const goldAndMakingCost =
+            price * (priceMap[karatKey] || 0) * weight + makingChargesForWeight;
 
-          // Begin with the full diamond cost
-          let discountedDiamondCost = totalDiamondPrice;
+          // Calculate the compare-at price (before discount is applied).
           let compareAtPrice = goldAndMakingCost + totalDiamondPrice;
 
-          // Use a regex to detect a discount in the variant title (handles optional spaces)
+          // Begin with full diamond cost.
+          let discountedDiamondCost = totalDiamondPrice;
+          // Use regex to detect discount in the variant title.
           const discountRegex = /(\d+)\s*%/i;
           const discountMatch = edge.node.title.match(discountRegex);
           if (discountMatch) {
@@ -214,7 +222,7 @@ export const action = async ({ request }) => {
           }
 
           const updatedPrice = goldAndMakingCost + discountedDiamondCost;
-              variantLog += ` | Gold + Making: ${goldAndMakingCost.toFixed(2)} | Diamond: ${discountedDiamondCost.toFixed(2)} | Final Price: ${updatedPrice.toFixed(2)} | Compare At Price: ${compareAtPrice.toFixed(2)}`;
+          variantLog += ` | Gold+Making: ${goldAndMakingCost.toFixed(2)} | Diamond: ${discountedDiamondCost.toFixed(2)} | Final: ${updatedPrice.toFixed(2)} | CompareAtPrice: ${compareAtPrice.toFixed(2)}`;
           debugLogs.push(variantLog);
 
           return {
@@ -499,9 +507,12 @@ export default function Index() {
                               Price: ₹{edge.node.price || "N/A"}
                             </Text>
                             <Text variant="bodySm">
+                              Compare At Price: ₹{edge.node.compareAtPrice || "N/A"}
+                            </Text>
+                            <Text variant="bodySm">
                               Weight:{" "}
-                              {edge.node.metafield?.value
-                                ? `${edge.node.metafield.value} g`
+                              {getMetafieldValue(edge.node.metafields.edges, "weight")
+                                ? `${getMetafieldValue(edge.node.metafields.edges, "weight")} g`
                                 : "N/A"}
                             </Text>
                           </BlockStack>
