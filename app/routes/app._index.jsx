@@ -41,14 +41,14 @@ export const loader = async ({ request }) => {
                     }
                   }
                 }
-                variants(first: 50) {
+                variants(first: 90) {
                   edges {
                     node {
                       id
                       title
                       price
                       compareAtPrice
-                      metafields(first: 2) {
+                      metafields(first: 5) {
                         edges {
                           node {
                             namespace
@@ -108,11 +108,7 @@ export const action = async ({ request }) => {
   let price = parseFloat(formData.get("price"));
   const makingCharges = parseFloat(formData.get("makingCharges")) || 0;
   if (isNaN(price) || price <= 0) {
-    return {
-      success: false,
-      message: "Invalid gold price provided.",
-      debugLogs: ["Invalid gold price."],
-    };
+    return { success: false, message: "Invalid gold price provided.", debugLogs: ["Invalid gold price."] };
   }
 
   const productData = JSON.parse(formData.get("productData"));
@@ -121,7 +117,7 @@ export const action = async ({ request }) => {
   // We'll collect debug logs and return them for display.
   const debugLogs = [];
 
-  // Multipliers for gold karat (used for variant pricing)
+  // Multipliers for gold karat
   const priceMap = {
     "24k": 1,
     "22k": 0.925,
@@ -139,25 +135,6 @@ export const action = async ({ request }) => {
 
   // Only allow these three colors
   const allowedColors = ["yellow gold", "rose gold", "white"];
-
-  // Helper: Retry function to handle throttling errors
-  async function executeWithRetry(query, variables, attempt = 1) {
-    try {
-      const response = await admin.graphql(query, { variables });
-      const data = await response.json();
-      // Check for errors in the response (adjust condition as needed)
-      if (data.errors || (data.data.metafieldsSet && data.data.metafieldsSet.userErrors.length > 0)) {
-        throw new Error("GraphQL errors encountered");
-      }
-      return data;
-    } catch (error) {
-      if (attempt < 5 && error.message.includes("Throttled")) {
-        await new Promise((resolve) => setTimeout(resolve, attempt * 1000));
-        return executeWithRetry(query, variables, attempt + 1);
-      }
-      throw error;
-    }
-  }
 
   try {
     const updatePromises = productData.map(async (product) => {
@@ -193,9 +170,8 @@ export const action = async ({ request }) => {
       }
       debugLogs.push(`Product: ${product.title} — totalDiamondPrice: ${totalDiamondPrice}`);
 
-      // Process variants and compute their gold price.
-      // Here, we assign a simple gold price = gold price * weight.
-      const processedVariants = product.variants.edges
+      // Process variants.
+      const variants = product.variants.edges
         .filter((edge) => {
           const titleLower = edge.node.title.toLowerCase();
           return allowedColors.some((color) => titleLower.includes(color));
@@ -212,6 +188,7 @@ export const action = async ({ request }) => {
           );
 
           // Retrieve the variant's "gold weight" from its metafields.
+          // Your gold weight metafield is defined as custom.weight.
           const variantMetafields = edge.node.metafields.edges;
           const weight = getNumericMetafieldValue(variantMetafields, "weight");
           if (!weight) {
@@ -220,12 +197,9 @@ export const action = async ({ request }) => {
             variantLog += ` | Weight: ${weight}`;
           }
 
-          // Simple gold price calculation: gold price * weight.
-          const simpleGoldPrice = weight > 0 ? price * weight : 0;
-
-          // Existing calculation for overall variant price (includes karat multiplier and making charges)
           const makingChargesForWeight = weight > 0 ? makingCharges * weight : 0;
-          const goldAndMakingCost = price * (priceMap[karatKey] || 0) * weight + makingChargesForWeight;
+          const goldAndMakingCost =
+            price * (priceMap[karatKey] || 0) * weight + makingChargesForWeight;
 
           // Calculate the compare-at price (before discount is applied).
           let compareAtPrice = goldAndMakingCost + totalDiamondPrice;
@@ -252,16 +226,15 @@ export const action = async ({ request }) => {
             id: edge.node.id,
             price: String(updatedPrice.toFixed(2)),
             compareAtPrice: String(compareAtPrice.toFixed(2)),
-            goldPrice: String(simpleGoldPrice.toFixed(2)), // assign simple gold price here
           };
         });
 
-      if (processedVariants.length === 0) {
+      if (variants.length === 0) {
         debugLogs.push(`No recognized variants for product "${product.title}".`);
         return null;
       }
 
-      // Update product variants (price & compareAtPrice).
+      // Update product variants.
       const response = await admin.graphql(
         `#graphql
           mutation productVariantsBulkUpdate($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
@@ -284,16 +257,12 @@ export const action = async ({ request }) => {
         {
           variables: {
             productId: product.id,
-            variants: processedVariants.map(({ id, price, compareAtPrice }) => ({
-              id,
-              price,
-              compareAtPrice,
-            })),
+            variants: variants,
           },
         }
       );
 
-      // Update the product metafield "custom.diamond_price"
+      // After updating variants, update the product metafield "custom.diamond_price"
       const metafieldResponse = await admin.graphql(
         `#graphql
           mutation metafieldsSet($metafields: [MetafieldsSetInput!]!) {
@@ -321,7 +290,7 @@ export const action = async ({ request }) => {
                 type: "number_decimal",
               },
             ],
-          },
+          }
         }
       );
       const metafieldResult = await metafieldResponse.json();
@@ -331,44 +300,6 @@ export const action = async ({ request }) => {
       ) {
         debugLogs.push(
           `Error updating metafield diamond_price for product "${product.title}": ${metafieldResult.data.metafieldsSet.userErrors
-            .map((e) => e.message)
-            .join(", ")}`
-        );
-      }
-
-      // Update each variant's metafield "custom.gold_price" with its computed simple gold price.
-      const variantMetafieldsResult = await executeWithRetry(
-        `#graphql
-          mutation metafieldsSet($metafields: [MetafieldsSetInput!]!) {
-            metafieldsSet(metafields: $metafields) {
-              metafields {
-                id
-                key
-                value
-              }
-              userErrors {
-                field
-                message
-              }
-            }
-          }
-        `,
-        {
-          metafields: processedVariants.map((variant) => ({
-            ownerId: variant.id,
-            namespace: "custom",
-            key: "gold_price",
-            value: variant.goldPrice,
-            type: "number_decimal",
-          })),
-        }
-      );
-      if (
-        variantMetafieldsResult.data.metafieldsSet.userErrors &&
-        variantMetafieldsResult.data.metafieldsSet.userErrors.length > 0
-      ) {
-        debugLogs.push(
-          `Error updating metafield gold_price for product "${product.title}": ${variantMetafieldsResult.data.metafieldsSet.userErrors
             .map((e) => e.message)
             .join(", ")}`
         );
@@ -625,12 +556,6 @@ export default function Index() {
                                 ? `${getMetafieldValue(edge.node.metafields.edges, "weight")} g`
                                 : "N/A"}
                             </Text>
-                            <Text variant="bodySm">
-                              Gold price:{" "}
-                              {getMetafieldValue(edge.node.metafields.edges, "gold_price")
-                                ? `${getMetafieldValue(edge.node.metafields.edges, "gold_price")} rs`
-                                : "N/A"}
-                            </Text>
                           </BlockStack>
                         ))}
                       </BlockStack>
@@ -640,6 +565,16 @@ export default function Index() {
               )}
             </BlockStack>
           </Card>
+          {debugLogs.length > 0 && (
+            <Card sectioned>
+              <BlockStack gap="2">
+                <Text variant="headingMd">Debug Logs</Text>
+                {debugLogs.map((line, idx) => (
+                  <Text key={idx}>{line}</Text>
+                ))}
+              </BlockStack>
+            </Card>
+          )}
         </Layout.Section>
       </Layout>
     </Page>
