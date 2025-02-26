@@ -41,14 +41,14 @@ export const loader = async ({ request }) => {
                     }
                   }
                 }
-                variants(first: 90) {
+                variants(first: 50) {
                   edges {
                     node {
                       id
                       title
                       price
                       compareAtPrice
-                      metafields(first: 5) {
+                      metafields(first: 2) {
                         edges {
                           node {
                             namespace
