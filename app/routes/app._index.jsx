@@ -25,14 +25,14 @@ export const loader = async ({ request }) => {
     const response = await admin.graphql(
       `#graphql
         query {
-          products(first: 150, query: "status:ACTIVE") {
+          products(first: 250, query: "status:ACTIVE") {
             edges {
               node {
                 id
                 title
                 status
                 handle
-                metafields(first: 20) {
+                metafields(first: 15) {
                   edges {
                     node {
                       namespace
@@ -41,14 +41,14 @@ export const loader = async ({ request }) => {
                     }
                   }
                 }
-                variants(first: 50) {
+                variants(first: 40) {
                   edges {
                     node {
                       id
                       title
                       price
                       compareAtPrice
-                      metafields(first: 2) {
+                      metafields(first: 5) {
                         edges {
                           node {
                             namespace
@@ -348,7 +348,7 @@ export default function Index() {
     "Fancy Solitaire 2ct+": 30000,
     "Fancy Solitaire 0.5ct+": 30000,
     "Small Diamonds": 15000,
-    Gemstones: 15000,
+    "Gemstones": 15000,
   });
   const [debugLogs, setDebugLogs] = useState([]);
 
