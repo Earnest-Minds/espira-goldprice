@@ -25,7 +25,7 @@ export const loader = async ({ request }) => {
     const response = await admin.graphql(
       `#graphql
         query {
-          products(first: 250, query: "status:ACTIVE") {
+          products(first: 50, query: "status:ACTIVE") {
             edges {
               node {
                 id
