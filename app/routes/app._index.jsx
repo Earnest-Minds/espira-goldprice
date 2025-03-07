@@ -25,7 +25,7 @@ export const loader = async ({ request }) => {
     const response = await admin.graphql(
       `#graphql
         query {
-          products(first: 50, query: "status:ACTIVE") {
+          products(first: 250, query: "status:ACTIVE") {
             edges {
               node {
                 id
@@ -41,14 +41,14 @@ export const loader = async ({ request }) => {
                     }
                   }
                 }
-                variants(first: 40) {
+                variants(first: 36) {
                   edges {
                     node {
                       id
                       title
                       price
                       compareAtPrice
-                      metafields(first: 5) {
+                      metafields(first: 2) {
                         edges {
                           node {
                             namespace
@@ -134,7 +134,7 @@ export const action = async ({ request }) => {
   };
 
   // Only allow these three colors
-  const allowedColors = ["yellow gold", "rose gold", "white"];
+  const allowedColors = ["yellow gold", "rose gold", "white gold"];
 
   try {
     const updatePromises = productData.map(async (product) => {
@@ -565,16 +565,7 @@ export default function Index() {
               )}
             </BlockStack>
           </Card>
-          {debugLogs.length > 0 && (
-            <Card sectioned>
-              <BlockStack gap="2">
-                <Text variant="headingMd">Debug Logs</Text>
-                {debugLogs.map((line, idx) => (
-                  <Text key={idx}>{line}</Text>
-                ))}
-              </BlockStack>
-            </Card>
-          )}
+        
         </Layout.Section>
       </Layout>
     </Page>
