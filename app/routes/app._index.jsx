@@ -11,10 +11,12 @@ import {
   ResourceList,
   ResourceItem,
   TextField,
+  Banner,
 } from "@shopify/polaris";
 import { TitleBar } from "@shopify/app-bridge-react";
 import { authenticate } from "../shopify.server";
 
+// 1) LOADER: Fetch up to 2000 active products using pagination
 export const loader = async ({ request }) => {
   const { admin } = await authenticate.admin(request);
 
@@ -22,59 +24,78 @@ export const loader = async ({ request }) => {
     request.method === "GET" &&
     new URL(request.url).searchParams.get("action") === "getProducts"
   ) {
-    const response = await admin.graphql(
-      `#graphql
-        query {
-          products(first: 250, query: "status:ACTIVE") {
-            edges {
-              node {
-                id
-                title
-                status
-                handle
-                metafields(first: 15) {
-                  edges {
-                    node {
-                      namespace
-                      key
-                      value
+    let products = [];
+    let cursor = null;
+    const maxProducts = 2000;
+
+    do {
+      const response = await admin.graphql(
+        `#graphql
+          query ($cursor: String) {
+            products(first: 250, after: $cursor, query: "status:ACTIVE") {
+              edges {
+                node {
+                  id
+                  title
+                  status
+                  handle
+                  metafields(first: 15) {
+                    edges {
+                      node {
+                        namespace
+                        key
+                        value
+                      }
                     }
                   }
-                }
-                variants(first: 36) {
-                  edges {
-                    node {
-                      id
-                      title
-                      price
-                      compareAtPrice
-                      metafields(first: 2) {
-                        edges {
-                          node {
-                            namespace
-                            key
-                            value
+                  variants(first: 36) {
+                    edges {
+                      node {
+                        id
+                        title
+                        price
+                        compareAtPrice
+                        metafields(first: 2) {
+                          edges {
+                            node {
+                              namespace
+                              key
+                              value
+                            }
                           }
                         }
                       }
                     }
                   }
                 }
+                cursor
+              }
+              pageInfo {
+                hasNextPage
+                endCursor
               }
             }
           }
+        `,
+        {
+          variables: { cursor },
         }
-      `
-    );
-    const responseJson = await response.json();
+      );
+
+      const responseJson = await response.json();
+      const { edges, pageInfo } = responseJson.data.products;
+      products = products.concat(edges.map((edge) => edge.node));
+      cursor = pageInfo.hasNextPage ? pageInfo.endCursor : null;
+    } while (cursor && products.length < maxProducts);
+
     return {
-      products: responseJson.data.products.edges.map((edge) => edge.node),
+      products: products.slice(0, maxProducts),
     };
   }
   return null;
 };
 
-// Helper functions defined at the top so both the action and component can use them
+// 2) HELPER FUNCTIONS
 const getMetafieldValue = (metafields, key) => {
   if (!metafields || !Array.isArray(metafields)) return null;
   const metafield = metafields.find(
@@ -100,21 +121,51 @@ const getNumericMetafieldValue = (metafields, key) => {
   return parseFloat(val) || 0;
 };
 
+/**
+ * Helper to process an array in chunks, running each chunk in parallel,
+ * but waiting for one chunk to finish before starting the next.
+ * @param {Array} array The items to process
+ * @param {number} chunkSize How many items to process in parallel
+ * @param {Function} callback An async function that takes an item and returns a promise
+ */
+async function processInChunks(array, chunkSize, callback) {
+  let results = [];
+
+  for (let i = 0; i < array.length; i += chunkSize) {
+    const chunk = array.slice(i, i + chunkSize);
+
+    // Process this chunk in parallel
+    const chunkResults = await Promise.all(
+      chunk.map((item) => callback(item))
+    );
+
+    // Collect results
+    results = results.concat(chunkResults.filter(Boolean));
+  }
+
+  return results;
+}
+
+// 3) ACTION: Update product prices & metafields in chunks to avoid throttling
 export const action = async ({ request }) => {
   const { admin } = await authenticate.admin(request);
   const formData = await request.formData();
 
-  // Parse the gold price and making charges safely.
+  // Parse the gold price and making charges
   let price = parseFloat(formData.get("price"));
   const makingCharges = parseFloat(formData.get("makingCharges")) || 0;
   if (isNaN(price) || price <= 0) {
-    return { success: false, message: "Invalid gold price provided.", debugLogs: ["Invalid gold price."] };
+    return {
+      success: false,
+      message: "Invalid gold price provided.",
+      debugLogs: ["Invalid gold price."],
+    };
   }
 
   const productData = JSON.parse(formData.get("productData"));
   const diamondPrices = JSON.parse(formData.get("diamondPrices"));
 
-  // We'll collect debug logs and return them for display.
+  // We'll collect debug logs and return them for display
   const debugLogs = [];
 
   // Multipliers for gold karat
@@ -137,10 +188,13 @@ export const action = async ({ request }) => {
   const allowedColors = ["yellow gold", "rose gold", "white gold"];
 
   try {
-    const updatePromises = productData.map(async (product) => {
+    // Process products in chunks of 5 (you can adjust chunkSize to reduce/increase concurrency)
+    const chunkSize = 5;
+
+    const results = await processInChunks(productData, chunkSize, async (product) => {
       const metafields = product.metafields.edges;
 
-      // Retrieve diamond types and weights from product metafields.
+      // Retrieve diamond types and weights from product metafields
       let diamondType_1 = getMetafieldValue(metafields, "diamond_1");
       let diamondType_2 = getMetafieldValue(metafields, "diamond_2");
       let diamondType_3 = getMetafieldValue(metafields, "diamond_3");
@@ -148,7 +202,6 @@ export const action = async ({ request }) => {
       if (typeof diamondType_2 === "string") diamondType_2 = diamondType_2.trim();
       if (typeof diamondType_3 === "string") diamondType_3 = diamondType_3.trim();
 
-      // Use getNumericMetafieldValue to parse diamond weights.
       const diamondWeight_1 = getNumericMetafieldValue(metafields, "diamond_weight_1");
       const diamondWeight_2 = getNumericMetafieldValue(metafields, "diamond_weight_2");
       const diamondWeight_3 = getNumericMetafieldValue(metafields, "diamond_weight_3");
@@ -159,7 +212,7 @@ export const action = async ({ request }) => {
         { type: diamondType_3, weight: diamondWeight_3 },
       ].filter((item) => item.type);
 
-      // Compute total diamond price.
+      // Compute total diamond price
       let totalDiamondPrice = 0;
       if (selectedDiamonds.length > 0) {
         totalDiamondPrice = selectedDiamonds.reduce((sum, diamond) => {
@@ -170,7 +223,7 @@ export const action = async ({ request }) => {
       }
       debugLogs.push(`Product: ${product.title} — totalDiamondPrice: ${totalDiamondPrice}`);
 
-      // Process variants.
+      // Process variants
       const variants = product.variants.edges
         .filter((edge) => {
           const titleLower = edge.node.title.toLowerCase();
@@ -182,13 +235,12 @@ export const action = async ({ request }) => {
         .map((edge) => {
           let variantLog = `Variant: "${edge.node.title}"`;
 
-          // Identify the karat from the variant title.
+          // Identify the karat from the variant title
           const karatKey = Object.keys(priceMap).find((k) =>
             edge.node.title.toLowerCase().includes(k)
           );
 
-          // Retrieve the variant's "gold weight" from its metafields.
-          // Your gold weight metafield is defined as custom.weight.
+          // Retrieve the variant's "gold weight" from its metafields
           const variantMetafields = edge.node.metafields.edges;
           const weight = getNumericMetafieldValue(variantMetafields, "weight");
           if (!weight) {
@@ -201,16 +253,16 @@ export const action = async ({ request }) => {
           const goldAndMakingCost =
             price * (priceMap[karatKey] || 0) * weight + makingChargesForWeight;
 
-          // Calculate the compare-at price (before discount is applied).
+          // Calculate the compare-at price (before discount)
           let compareAtPrice = goldAndMakingCost + totalDiamondPrice;
 
-          // Begin with full diamond cost.
+          // Begin with full diamond cost
           let discountedDiamondCost = totalDiamondPrice;
-          // Use regex to detect discount in the variant title.
+          // Use regex to detect discount in the variant title
           const discountRegex = /(\d+)\s*%/i;
           const discountMatch = edge.node.title.match(discountRegex);
           if (discountMatch) {
-            const discountFound = discountMatch[0].replace(/\s+/g, '');
+            const discountFound = discountMatch[0].replace(/\s+/g, "");
             const discountFactor = discountMap[discountFound];
             if (discountFactor) {
               variantLog += ` | Match discount: "${discountFound}" => factor ${discountFactor}`;
@@ -234,7 +286,7 @@ export const action = async ({ request }) => {
         return null;
       }
 
-      // Update product variants.
+      // Update product variants
       const response = await admin.graphql(
         `#graphql
           mutation productVariantsBulkUpdate($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
@@ -262,7 +314,7 @@ export const action = async ({ request }) => {
         }
       );
 
-      // After updating variants, update the product metafield "custom.diamond_price"
+      // Update the product metafield "custom.diamond_price"
       const metafieldResponse = await admin.graphql(
         `#graphql
           mutation metafieldsSet($metafields: [MetafieldsSetInput!]!) {
@@ -290,7 +342,7 @@ export const action = async ({ request }) => {
                 type: "number_decimal",
               },
             ],
-          }
+          },
         }
       );
       const metafieldResult = await metafieldResponse.json();
@@ -308,9 +360,9 @@ export const action = async ({ request }) => {
       return response.json();
     });
 
-    const results = (await Promise.all(updatePromises)).filter(Boolean);
+    // Collect userErrors from all chunk updates
     const errors = results
-      .flatMap((result) => result.data.productVariantsBulkUpdate.userErrors)
+      .flatMap((result) => (result ? result.data.productVariantsBulkUpdate.userErrors : []))
       .filter((error) => error);
 
     if (errors.length > 0) {
@@ -329,14 +381,21 @@ export const action = async ({ request }) => {
   }
 };
 
+// 4) REACT COMPONENT: Show Banner on success/error instead of using alert()
 export default function Index() {
   const fetcher = useFetcher();
+
+  // Gold price & loading/error states
   const [goldPrice, setGoldPrice] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+
+  // Product data & loading states
   const [products, setProducts] = useState([]);
   const [productsLoading, setProductsLoading] = useState(false);
-  const [priceInput, setPriceInput] = useState("8830");
+
+  // Input fields
+  const [priceInput, setPriceInput] = useState("8900");
   const [makingChargesInput, setMakingChargesInput] = useState("1200");
   const [diamondPrices, setDiamondPrices] = useState({
     "Round Solitaire 5ct+": 30000,
@@ -350,13 +409,20 @@ export default function Index() {
     "Small Diamonds": 15000,
     "Gemstones": 15000,
   });
+
+  // Debug logs
   const [debugLogs, setDebugLogs] = useState([]);
 
+  // NEW: Banner message & status
+  const [bannerMessage, setBannerMessage] = useState("");
+  const [bannerStatus, setBannerStatus] = useState("info"); // "success", "critical", etc.
+
+  // Fetch gold price
   const fetchGoldPrice = async () => {
     setLoading(true);
     setError(null);
     try {
-      const apiKey = "goldapi-3x7ks19m4wpyhjb-io";
+      const apiKey = "goldapi-b96usm5mg976t-io"; // Replace with your actual API key
       const response = await fetch("https://www.goldapi.io/api/XAU/INR", {
         headers: {
           "x-access-token": apiKey,
@@ -367,47 +433,58 @@ export default function Index() {
         throw new Error("Failed to fetch gold price");
       }
       const data = await response.json();
+      // Adjust the 24K price by a factor if needed
       setGoldPrice(data.price_gram_24k + 0.05 * data.price_gram_24k);
-    } catch (error) {
-      setError(error.message);
-      console.error("Error fetching gold price:", error);
+    } catch (err) {
+      setError(err.message);
+      console.error("Error fetching gold price:", err);
     } finally {
       setLoading(false);
     }
   };
 
+  // Fetch products
   const fetchProducts = () => {
     setProductsLoading(true);
     try {
       fetcher.submit({ action: "getProducts" }, { method: "GET" });
-    } catch (error) {
-      console.error("Error fetching products:", error);
+    } catch (err) {
+      console.error("Error fetching products:", err);
     } finally {
       setProductsLoading(false);
     }
   };
 
+  // On mount, fetch gold price and products
   useEffect(() => {
     fetchGoldPrice();
     fetchProducts();
+    // Refresh gold price every 5 minutes
     const interval = setInterval(fetchGoldPrice, 300000);
     return () => clearInterval(interval);
   }, []);
 
+  // Listen for fetcher data changes
   useEffect(() => {
     if (fetcher.data?.products) {
+      // Loader data from GET
       setProducts(fetcher.data.products);
     } else if (fetcher.data?.message) {
-      alert(fetcher.data.message);
+      // Action response from POST
+      setBannerMessage(fetcher.data.message);
+      setBannerStatus(fetcher.data.success ? "success" : "critical");
+
       if (fetcher.data.debugLogs) {
         setDebugLogs(fetcher.data.debugLogs);
       }
       if (fetcher.data.success) {
+        // If update succeeded, re-fetch products to show new prices
         fetchProducts();
       }
     }
   }, [fetcher.data]);
 
+  // Handlers for input changes
   const handlePriceChange = (value) => setPriceInput(value);
   const handleMakingChargesChange = (value) => setMakingChargesInput(value);
   const handleDiamondPriceChange = (type, value) => {
@@ -417,9 +494,11 @@ export default function Index() {
     }));
   };
 
+  // Button to start update
   const handleButtonClick = async () => {
     if (!priceInput || isNaN(priceInput) || parseFloat(priceInput) <= 0) {
-      alert("Please enter a valid gold price");
+      setBannerMessage("Please enter a valid gold price");
+      setBannerStatus("critical");
       return;
     }
     setLoading(true);
@@ -433,9 +512,10 @@ export default function Index() {
         },
         { method: "POST" }
       );
-    } catch (error) {
-      alert("Error updating prices");
-      console.error(error);
+    } catch (err) {
+      setBannerMessage("Error updating prices");
+      setBannerStatus("critical");
+      console.error(err);
     } finally {
       setLoading(false);
     }
@@ -444,7 +524,23 @@ export default function Index() {
   return (
     <Page>
       <TitleBar title="Update Prices" />
+
       <Layout>
+        {/* SECTION: Banner for success/error messages */}
+        <Layout.Section>
+          {bannerMessage && (
+            <Card sectioned>
+              <Banner
+                title={bannerStatus === "success" ? "Success" : "Error"}
+                status={bannerStatus}
+              >
+                <p>{bannerMessage}</p>
+              </Banner>
+            </Card>
+          )}
+        </Layout.Section>
+
+        {/* SECTION: Gold price & update controls */}
         <Layout.Section variant="oneHalf">
           <Card padding="1600">
             <BlockStack gap="400">
@@ -514,6 +610,8 @@ export default function Index() {
             </BlockStack>
           </Card>
         </Layout.Section>
+
+        {/* SECTION: Product List */}
         <Layout.Section>
           <Card>
             <BlockStack gap="4">
@@ -533,14 +631,14 @@ export default function Index() {
                           {product.title}
                         </Text>
                         {product.metafields.edges
-                          .filter((metafieldEdge) => metafieldEdge.node.namespace === "custom")
-                          .map((metafieldEdge, index) => (
+                          .filter((mEdge) => mEdge.node.namespace === "custom")
+                          .map((mEdge, index) => (
                             <Text key={index} variant="bodySm" color="subdued">
-                              {metafieldEdge.node.key}: {metafieldEdge.node.value}
+                              {mEdge.node.key}: {mEdge.node.value}
                             </Text>
                           ))}
-                        {product.variants.edges.map((edge, index) => (
-                          <BlockStack key={index} gap="1">
+                        {product.variants.edges.map((edge, idx) => (
+                          <BlockStack key={idx} gap="1">
                             <Text variant="bodyMd" fontWeight="bold">
                               Variant: {edge.node.title || "No Title"}
                             </Text>
@@ -565,8 +663,8 @@ export default function Index() {
               )}
             </BlockStack>
           </Card>
-        
         </Layout.Section>
+
       </Layout>
     </Page>
   );
