@@ -395,7 +395,7 @@ export default function Index() {
   const [productsLoading, setProductsLoading] = useState(false);
 
   // Input fields
-  const [priceInput, setPriceInput] = useState("8900");
+  const [priceInput, setPriceInput] = useState("10000");
   const [makingChargesInput, setMakingChargesInput] = useState("1200");
   const [diamondPrices, setDiamondPrices] = useState({
     "Round Solitaire 5ct+": 30000,
