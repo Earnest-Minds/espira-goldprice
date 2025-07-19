@@ -395,8 +395,8 @@ export default function Index() {
   const [productsLoading, setProductsLoading] = useState(false);
 
   // Input fields
-  const [priceInput, setPriceInput] = useState("10000");
-  const [makingChargesInput, setMakingChargesInput] = useState("1200");
+  const [priceInput, setPriceInput] = useState("10500");
+  const [makingChargesInput, setMakingChargesInput] = useState("1500");
   const [diamondPrices, setDiamondPrices] = useState({
     "Round Solitaire 5ct+": 30000,
     "Round Solitaire 3ct+": 30000,
@@ -406,7 +406,7 @@ export default function Index() {
     "Fancy Solitaire 3ct+": 30000,
     "Fancy Solitaire 2ct+": 30000,
     "Fancy Solitaire 0.5ct+": 30000,
-    "Small Diamonds": 15000,
+    "Small Diamonds": 20000,
     "Gemstones": 15000,
   });
 
@@ -422,7 +422,7 @@ export default function Index() {
     setLoading(true);
     setError(null);
     try {
-      const apiKey = "goldapi-b96usm5mg976t-io"; // Replace with your actual API key
+      const apiKey = "goldapi-43irpsm4wlppn5-io"; // Replace with your actual API key
       const response = await fetch("https://www.goldapi.io/api/XAU/INR", {
         headers: {
           "x-access-token": apiKey,
