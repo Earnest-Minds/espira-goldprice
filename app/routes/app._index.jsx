@@ -55,7 +55,7 @@ export const loader = async ({ request }) => {
                         title
                         price
                         compareAtPrice
-                        metafields(first: 2) {
+                        metafields(first: 10) {
                           edges {
                             node {
                               namespace
@@ -106,8 +106,8 @@ const getMetafieldValue = (metafields, key) => {
 
 const getNumericMetafieldValue = (metafields, key) => {
   const val = getMetafieldValue(metafields, key);
-  if (!val) return 0;
-  const trimmed = val.trim();
+  if (val === null || val === undefined) return 0;
+  const trimmed = String(val).trim();
   try {
     if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
       const parsed = JSON.parse(trimmed);
@@ -118,7 +118,11 @@ const getNumericMetafieldValue = (metafields, key) => {
   } catch (e) {
     // If parsing fails, fallback to parseFloat
   }
-  return parseFloat(val) || 0;
+
+  // Allow values like "2.5%" by stripping '%' if present
+  const numericOnly = trimmed.replace("%", "");
+  const parsedFloat = parseFloat(numericOnly);
+  return isNaN(parsedFloat) ? 0 : parsedFloat;
 };
 
 /**
@@ -177,13 +181,6 @@ export const action = async ({ request }) => {
     "9k": 0.385,
   };
 
-  // Discount factors for diamond portion only
-  const discountMap = {
-    "10%": 0.9,
-    "12%": 0.88,
-    "15%": 0.85,
-  };
-
   // Only allow these three colors
   const allowedColors = ["yellow gold", "rose gold", "white gold"];
 
@@ -226,18 +223,18 @@ export const action = async ({ request }) => {
       // Process variants
       const variants = product.variants.edges
         .filter((edge) => {
-          const titleLower = edge.node.title.toLowerCase();
+          const titleLower = (edge.node.title || "").toLowerCase();
           return allowedColors.some((color) => titleLower.includes(color));
         })
         .filter((edge) =>
-          Object.keys(priceMap).some((k) => edge.node.title.toLowerCase().includes(k))
+          Object.keys(priceMap).some((k) => (edge.node.title || "").toLowerCase().includes(k))
         )
         .map((edge) => {
           let variantLog = `Variant: "${edge.node.title}"`;
 
           // Identify the karat from the variant title
           const karatKey = Object.keys(priceMap).find((k) =>
-            edge.node.title.toLowerCase().includes(k)
+            (edge.node.title || "").toLowerCase().includes(k)
           );
 
           // Retrieve the variant's "gold weight" from its metafields
@@ -249,29 +246,34 @@ export const action = async ({ request }) => {
             variantLog += ` | Weight: ${weight}`;
           }
 
-          const makingChargesForWeight = weight > 0 ? makingCharges * weight : 0;
-          const goldAndMakingCost =
-            price * (priceMap[karatKey] || 0) * weight + makingChargesForWeight;
+          // New: check for wastage_percentage metafield (variant-level)
+          const wastagePercent = getNumericMetafieldValue(variantMetafields, "wastage_percentage");
 
-          // Calculate the compare-at price (before discount)
-          let compareAtPrice = goldAndMakingCost + totalDiamondPrice;
+          // Calculate gold price for this variant (per weight + karat multiplier)
+          const karatMultiplier = priceMap[karatKey] || 0;
+          const goldPriceForWeight = price * karatMultiplier * weight;
 
-          // Begin with full diamond cost
-          let discountedDiamondCost = totalDiamondPrice;
-          // Use regex to detect discount in the variant title
-          const discountRegex = /(\d+)\s*%/i;
-          const discountMatch = edge.node.title.match(discountRegex);
-          if (discountMatch) {
-            const discountFound = discountMatch[0].replace(/\s+/g, "");
-            const discountFactor = discountMap[discountFound];
-            if (discountFactor) {
-              variantLog += ` | Match discount: "${discountFound}" => factor ${discountFactor}`;
-              discountedDiamondCost = totalDiamondPrice * discountFactor;
-            }
+          // If wastagePercent is present and > 0, ignore makingCharges and apply wastage percentage
+          let goldAndMakingCost = 0;
+          if (wastagePercent && !isNaN(wastagePercent) && parseFloat(wastagePercent) > 0) {
+            const wastageMultiplier = 1 + parseFloat(wastagePercent) / 100;
+            goldAndMakingCost = goldPriceForWeight * wastageMultiplier;
+            variantLog += ` | Using wastage%: ${wastagePercent}% -> GoldWithWastage: ${goldAndMakingCost.toFixed(2)}`;
+          } else {
+            // fallback to original making charge logic (making charges are per-gram)
+            const makingChargesForWeight = weight > 0 ? makingCharges * weight : 0;
+            goldAndMakingCost = goldPriceForWeight + makingChargesForWeight;
+            variantLog += ` | Gold: ${goldPriceForWeight.toFixed(2)} | MakingCharges: ${makingChargesForWeight.toFixed(2)} -> Gold+Making: ${goldAndMakingCost.toFixed(2)}`;
           }
 
+          // No discounts — compareAtPrice is full price before any promotional reductions
+          let compareAtPrice = goldAndMakingCost + totalDiamondPrice;
+
+          // Use full diamond cost (no discount)
+          const discountedDiamondCost = totalDiamondPrice;
+
           const updatedPrice = goldAndMakingCost + discountedDiamondCost;
-          variantLog += ` | Gold+Making: ${goldAndMakingCost.toFixed(2)} | Diamond: ${discountedDiamondCost.toFixed(2)} | Final: ${updatedPrice.toFixed(2)} | CompareAtPrice: ${compareAtPrice.toFixed(2)}`;
+          variantLog += ` | Diamond: ${discountedDiamondCost.toFixed(2)} | Final: ${updatedPrice.toFixed(2)} | CompareAtPrice: ${compareAtPrice.toFixed(2)}`;
           debugLogs.push(variantLog);
 
           return {
@@ -654,6 +656,11 @@ export default function Index() {
                                 ? `${getMetafieldValue(edge.node.metafields.edges, "weight")} g`
                                 : "N/A"}
                             </Text>
+                            <Text variant="bodySm">
+                              Wastage%:{" "}
+                              {getMetafieldValue(edge.node.metafields.edges, "wastage_percentage") ||
+                                "N/A"}
+                            </Text>
                           </BlockStack>
                         ))}
                       </BlockStack>
@@ -664,7 +671,6 @@ export default function Index() {
             </BlockStack>
           </Card>
         </Layout.Section>
-
       </Layout>
     </Page>
   );
