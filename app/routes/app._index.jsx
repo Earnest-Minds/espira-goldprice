@@ -424,7 +424,7 @@ export default function Index() {
     setLoading(true);
     setError(null);
     try {
-      const apiKey = "goldapi-43irpsm4wlppn5-io"; // Replace with your actual API key
+      const apiKey = "goldapi-1e9119mjsaor0s-io"; // Replace with your actual API key
       const response = await fetch("https://www.goldapi.io/api/XAU/INR", {
         headers: {
           "x-access-token": apiKey,
