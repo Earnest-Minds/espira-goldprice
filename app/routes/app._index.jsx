@@ -436,7 +436,7 @@ export default function Index() {
       }
       const data = await response.json();
       // Adjust the 24K price by a factor if needed
-      setGoldPrice(data.price_gram_24k + 0.05 * data.price_gram_24k);
+      setGoldPrice(data.price_gram_24k + 0.10 * data.price_gram_24k);
     } catch (err) {
       setError(err.message);
       console.error("Error fetching gold price:", err);
